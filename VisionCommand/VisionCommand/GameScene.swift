@@ -9,9 +9,6 @@ import SpriteKit
 
 class GameScene: SKScene {
     
-    // Our test button
-    private var button: SKShapeNode?
-    
     // Reticle elements
     private var outerFrame: SKNode?
     private var innerCrosshair: SKShapeNode?
@@ -20,15 +17,20 @@ class GameScene: SKScene {
     private var outerFramePosition = CGPoint.zero
     private var currentMousePosition = CGPoint.zero
     
-    // Colors for button states
-    private let normalColor = SKColor.blue
-    private let hoverColor = SKColor.cyan
-    private let activeColor = SKColor.green
-    
     // Dwell timing
     private var dwellTimer: TimeInterval = 0
-    private let dwellDuration: TimeInterval = 0.6  // 600ms
-    private var isHovering = false
+    private let dwellDuration: TimeInterval = 0.4  // 400ms
+    private var dwellStartPosition = CGPoint.zero
+    private var isDwelling = false
+    
+    // Last fired position - prevents re-firing at same spot
+    private var lastFiredPosition: CGPoint?
+    
+    // Movement tolerance (pixels) - movement beyond this cancels dwell
+    private let dwellMovementTolerance: CGFloat = 30.0
+    
+    // Minimum distance to move before allowing another fire
+    private let refireDistanceThreshold: CGFloat = 80.0
     
     override func didMove(to view: SKView) {
         // Enable mouse tracking
@@ -36,30 +38,6 @@ class GameScene: SKScene {
         
         // Set background color
         self.backgroundColor = SKColor.black
-        
-        // Create a rectangular button in the center of the screen
-        let buttonWidth: CGFloat = 200
-        let buttonHeight: CGFloat = 100
-        
-        button = SKShapeNode(rectOf: CGSize(width: buttonWidth, height: buttonHeight), cornerRadius: 10)
-        button?.fillColor = normalColor
-        button?.strokeColor = SKColor.white
-        button?.lineWidth = 3
-        button?.position = CGPoint(x: self.size.width / 2, y: self.size.height / 2)
-        
-        if let button = button {
-            self.addChild(button)
-        }
-        
-        // Add label to button
-        let label = SKLabelNode(text: "DWELL TO FIRE")
-        label.fontName = "Arial-BoldMT"
-        label.fontSize = 24
-        label.fontColor = SKColor.white
-        label.verticalAlignmentMode = .center
-        label.position = CGPoint.zero
-        
-        button?.addChild(label)
         
         // Create reticle
         createReticle()
@@ -71,7 +49,7 @@ class GameScene: SKScene {
         outerFrame?.position = CGPoint(x: self.size.width / 2, y: self.size.height / 2)
         self.addChild(outerFrame!)
         
-        // Outer frame corners (like your screenshot)
+        // Outer frame corners
         let cornerSize: CGFloat = 40
         let frameSize: CGFloat = 120
         let cornerThickness: CGFloat = 2
@@ -167,51 +145,85 @@ class GameScene: SKScene {
             outerFramePosition.y += (mousePosition.y - outerFramePosition.y) * smoothingFactor
             outerFrame?.position = outerFramePosition
             
-            // Check if mouse is over the button
-            if let button = button, button.contains(mousePosition) {
-                // Mouse is hovering
-                if !isHovering {
-                    // Just started hovering
-                    isHovering = true
+            // Check if we're far enough from last fired position
+            var canFire = true
+            if let lastFired = lastFiredPosition {
+                let distanceFromLastFire = hypot(
+                    mousePosition.x - lastFired.x,
+                    mousePosition.y - lastFired.y
+                )
+                canFire = distanceFromLastFire > refireDistanceThreshold
+            }
+            
+            // Handle dwell timing only if we can fire
+            if canFire {
+                if !isDwelling {
+                    // Start dwelling
+                    isDwelling = true
+                    dwellStartPosition = mousePosition
                     dwellTimer = 0
-                }
-                
-                // Increment dwell timer
-                dwellTimer += 1.0 / 60.0  // Assuming 60 FPS
-                
-                // Update button color based on dwell progress
-                if dwellTimer >= dwellDuration {
-                    // Dwell complete - FIRE!
-                    button.fillColor = activeColor
-                    activateButton()
                 } else {
-                    // Still dwelling - show progress
-                    button.fillColor = hoverColor
+                    // Check if movement exceeds tolerance
+                    let distance = hypot(
+                        mousePosition.x - dwellStartPosition.x,
+                        mousePosition.y - dwellStartPosition.y
+                    )
+                    
+                    if distance > dwellMovementTolerance {
+                        // Moved too far - reset dwell
+                        dwellStartPosition = mousePosition
+                        dwellTimer = 0
+                    } else {
+                        // Still within tolerance - increment timer
+                        dwellTimer += 1.0 / 60.0  // Assuming 60 FPS
+                        
+                        if dwellTimer >= dwellDuration {
+                            // Dwell complete - FIRE!
+                            fireAtPosition(dwellStartPosition)
+                            
+                            // Record this position as last fired
+                            lastFiredPosition = dwellStartPosition
+                            
+                            // Reset dwell state
+                            isDwelling = false
+                            dwellTimer = 0
+                        }
+                    }
                 }
-                
             } else {
-                // Mouse is not hovering - reset
-                if isHovering {
-                    isHovering = false
-                    dwellTimer = 0
-                    button?.fillColor = normalColor
-                }
+                // Too close to last fire - can't dwell yet
+                isDwelling = false
+                dwellTimer = 0
             }
         }
     }
     
-    func activateButton() {
-        print("BUTTON ACTIVATED!")
+    func fireAtPosition(_ position: CGPoint) {
+        print("FIRE at position: \(position)")
         
-        // Reset after activation
-        dwellTimer = 0
+        // Create explosion circle
+        let explosion = SKShapeNode(circleOfRadius: 10)
+        explosion.fillColor = SKColor.clear
+        explosion.strokeColor = SKColor.cyan
+        explosion.lineWidth = 3
+        explosion.position = position
+        explosion.alpha = 1.0
         
-        // Flash effect
-        if let button = button {
-            button.run(SKAction.sequence([
-                SKAction.wait(forDuration: 0.2),
-                SKAction.run { button.fillColor = self.normalColor }
-            ]))
-        }
+        self.addChild(explosion)
+        
+        // Animate: small → large → small → disappear
+        let expandAction = SKAction.scale(to: 8.0, duration: 0.3)
+        let shrinkAction = SKAction.scale(to: 0.5, duration: 0.3)
+        let fadeAction = SKAction.fadeOut(withDuration: 0.2)
+        let removeAction = SKAction.removeFromParent()
+        
+        let sequence = SKAction.sequence([
+            expandAction,
+            shrinkAction,
+            fadeAction,
+            removeAction
+        ])
+        
+        explosion.run(sequence)
     }
 }
