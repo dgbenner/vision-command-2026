@@ -27,10 +27,27 @@ class GameScene: SKScene {
     private var lastFiredPosition: CGPoint?
     
     // Movement tolerance (pixels) - movement beyond this cancels dwell
-    private let dwellMovementTolerance: CGFloat = 30.0
+    private let dwellMovementTolerance: CGFloat = 80.0
     
     // Minimum distance to move before allowing another fire
-    private let refireDistanceThreshold: CGFloat = 80.0
+    private let refireDistanceThreshold: CGFloat = 100.0
+    
+    // Frame rate throttling
+    private var lastUpdateTime: TimeInterval = 0
+    private let updateInterval: TimeInterval = 1.0 / 30.0  // 30 FPS instead of 60
+    
+    // Missile spawning
+    private var missileSpawnTimer: TimeInterval = 0
+    private let missileSpawnInterval: TimeInterval = 6.0  // 1 missile every 6 seconds
+    private var missiles: [Missile] = []
+    
+    // Missile types (color, speed)
+    private let missileTypes: [(color: SKColor, speed: CGFloat)] = [
+        (SKColor(red: 1.0, green: 1.0, blue: 0.0, alpha: 1.0), 150),  // Yellow - fastest
+        (SKColor(red: 1.0, green: 0.6, blue: 0.0, alpha: 1.0), 120),  // Orange
+        (SKColor(red: 1.0, green: 0.3, blue: 0.0, alpha: 1.0), 90),   // Red-orange
+        (SKColor(red: 1.0, green: 0.0, blue: 0.0, alpha: 1.0), 75)    // Red - slowest
+    ]
     
     override func didMove(to view: SKView) {
         // Enable mouse tracking
@@ -39,14 +56,29 @@ class GameScene: SKScene {
         // Set background color
         self.backgroundColor = SKColor.black
         
+        // Add background image (behind everything)
+        let background = SKSpriteNode(imageNamed: "background")
+        background.position = CGPoint(x: self.size.width / 2, y: self.size.height / 2)
+        background.size = self.size  // Scale to match scene size
+        background.zPosition = -100  // Behind everything
+        self.addChild(background)
+        
         // Create reticle
         createReticle()
+        
+        // Add foreground image (in front of game elements)
+        let foreground = SKSpriteNode(imageNamed: "foreground")
+        foreground.position = CGPoint(x: self.size.width / 2, y: self.size.height / 2)
+        foreground.size = self.size  // Scale to match scene size
+        foreground.zPosition = 100  // In front of everything
+        self.addChild(foreground)
     }
     
     func createReticle() {
         // Outer frame container
         outerFrame = SKNode()
         outerFrame?.position = CGPoint(x: self.size.width / 2, y: self.size.height / 2)
+        outerFrame?.zPosition = 50
         self.addChild(outerFrame!)
         
         // Outer frame corners
@@ -116,11 +148,63 @@ class GameScene: SKScene {
         innerCrosshair?.strokeColor = SKColor.white
         innerCrosshair?.lineWidth = 2
         innerCrosshair?.position = CGPoint.zero
+        innerCrosshair?.zPosition = 51
         
         self.addChild(innerCrosshair!)
     }
     
+    func spawnMissile() {
+        // Random missile type
+        let missileType = missileTypes.randomElement()!
+        
+        // Random spawn position along top of screen
+        let spawnX = CGFloat.random(in: 50...(self.size.width - 50))
+        let spawnY = self.size.height
+        
+        // Random target position along bottom of screen
+        let targetX = CGFloat.random(in: 50...(self.size.width - 50))
+        let targetY: CGFloat = 0
+        
+        let missile = Missile(
+            startPosition: CGPoint(x: spawnX, y: spawnY),
+            targetPosition: CGPoint(x: targetX, y: targetY),
+            color: missileType.color,
+            speed: missileType.speed
+        )
+        
+        self.addChild(missile)
+        missiles.append(missile)
+    }
+    
     override func update(_ currentTime: TimeInterval) {
+        // Throttle updates to 30 FPS
+        if currentTime - lastUpdateTime < updateInterval {
+            return
+        }
+        let deltaTime = currentTime - lastUpdateTime
+        lastUpdateTime = currentTime
+        
+        // Missile spawning timer
+        missileSpawnTimer += deltaTime
+        if missileSpawnTimer >= missileSpawnInterval {
+            spawnMissile()
+            missileSpawnTimer = 0
+        }
+        
+        // Update missiles
+        for missile in missiles {
+            missile.update(deltaTime: deltaTime)
+        }
+        
+        // Remove missiles that reached bottom
+        missiles.removeAll { missile in
+            if missile.position.y <= 0 {
+                missile.removeFromParent()
+                return true
+            }
+            return false
+        }
+        
         // Check mouse position every frame
         if let view = self.view,
            let window = view.window {
@@ -175,7 +259,7 @@ class GameScene: SKScene {
                         dwellTimer = 0
                     } else {
                         // Still within tolerance - increment timer
-                        dwellTimer += 1.0 / 60.0  // Assuming 60 FPS
+                        dwellTimer += deltaTime
                         
                         if dwellTimer >= dwellDuration {
                             // Dwell complete - FIRE!
@@ -208,6 +292,7 @@ class GameScene: SKScene {
         explosion.lineWidth = 3
         explosion.position = position
         explosion.alpha = 1.0
+        explosion.zPosition = 10
         
         self.addChild(explosion)
         
@@ -225,5 +310,111 @@ class GameScene: SKScene {
         ])
         
         explosion.run(sequence)
+    }
+}
+
+// MARK: - Missile Class
+
+class Missile: SKNode {
+    
+    private var warhead: SKShapeNode!
+    private var glow: SKShapeNode!
+    private var trail: SKShapeNode!
+    
+    private var velocity: CGVector!
+    private var missileColor: SKColor!
+    private var missileSpeed: CGFloat!
+    
+    private var trailPoints: [CGPoint] = []
+    private let maxTrailLength: Int = 30
+    
+    init(startPosition: CGPoint, targetPosition: CGPoint, color: SKColor, speed: CGFloat) {
+        super.init()
+        
+        self.position = startPosition
+        self.missileColor = color
+        self.missileSpeed = speed
+        
+        // Calculate velocity toward target
+        let dx = targetPosition.x - startPosition.x
+        let dy = targetPosition.y - startPosition.y
+        let distance = hypot(dx, dy)
+        velocity = CGVector(dx: (dx / distance) * speed, dy: (dy / distance) * speed)
+        
+        // Create warhead (2x2 pixel dot)
+        warhead = SKShapeNode(rectOf: CGSize(width: 2, height: 2))
+        warhead.fillColor = color
+        warhead.strokeColor = color
+        warhead.zPosition = 2
+        self.addChild(warhead)
+        
+        // Create glow (pulsing darker version)
+        glow = SKShapeNode(circleOfRadius: 8)
+        glow.fillColor = color.withAlphaComponent(0.3)
+        glow.strokeColor = SKColor.clear
+        glow.zPosition = 1
+        self.addChild(glow)
+        
+        // Slow pulse animation (2-4 seconds)
+        let pulseOut = SKAction.scale(to: 2.0, duration: 3.0)
+        let pulseIn = SKAction.scale(to: 1.0, duration: 3.0)
+        let pulseSequence = SKAction.sequence([pulseOut, pulseIn])
+        let pulseForever = SKAction.repeatForever(pulseSequence)
+        glow.run(pulseForever)
+        
+        // Create trail
+        trail = SKShapeNode()
+        trail.strokeColor = color
+        trail.lineWidth = 1
+        trail.zPosition = 0
+        self.addChild(trail)
+    }
+    
+    required init?(coder aDecoder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    func update(deltaTime: TimeInterval) {
+        // Move missile
+        self.position.x += velocity.dx * CGFloat(deltaTime)
+        self.position.y += velocity.dy * CGFloat(deltaTime)
+        
+        // Add current position to trail
+        trailPoints.insert(self.position, at: 0)
+        
+        // Limit trail length
+        if trailPoints.count > maxTrailLength {
+            trailPoints.removeLast()
+        }
+        
+        // Update trail rendering
+        updateTrail()
+    }
+    
+    func updateTrail() {
+        let path = CGMutablePath()
+        
+        if trailPoints.count > 1 {
+            // Start from first point (relative to missile position)
+            let firstPoint = CGPoint(
+                x: trailPoints[0].x - self.position.x,
+                y: trailPoints[0].y - self.position.y
+            )
+            path.move(to: firstPoint)
+            
+            // Draw fading trail
+            for i in 1..<trailPoints.count {
+                let point = CGPoint(
+                    x: trailPoints[i].x - self.position.x,
+                    y: trailPoints[i].y - self.position.y
+                )
+                path.addLine(to: point)
+            }
+        }
+        
+        trail.path = path
+        
+        // Fade trail opacity based on length
+        trail.alpha = 0.8
     }
 }
